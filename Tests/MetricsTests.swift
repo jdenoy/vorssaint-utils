@@ -235,6 +235,11 @@ struct MetricsTests {
                "shelf shortcut defaults to Ctrl+Opt+Cmd+D")
         expect(registeredDefaults[DefaultsKey.shelfShakeToOpen] as? Bool == true,
                "shelf shake opens by default once shelf is enabled")
+        expect(registeredDefaults[DefaultsKey.clipboardHistoryShortcutEnabled] as? Bool == true,
+               "clipboard history shortcut is ready when clipboard history is enabled")
+        expect(registeredDefaults[DefaultsKey.clipboardHistoryShortcut] as? String
+               == GlobalShortcut.clipboardDefault.storageValue,
+               "clipboard history shortcut defaults to Ctrl+Opt+Cmd+V")
         expect(registeredDefaults[DefaultsKey.urlCleanerEnabled] as? Bool == false,
                "URL cleaner clipboard watching is opt-in")
         expect(registeredDefaults[DefaultsKey.windowMaximizeEnabled] as? Bool == false,
@@ -273,6 +278,8 @@ struct MetricsTests {
                "monitor default interval stays at 2 seconds")
         expect(registeredDefaults[DefaultsKey.monitorShowDisk] as? Bool == true,
                "disk monitor panel section is shown by default")
+        expect(registeredDefaults[DefaultsKey.monitorSysAlerts] as? Bool == true,
+               "system alert controls are shown by default")
         expect(registeredDefaults[DefaultsKey.monitorGraphDisk] as? Bool == true,
                "disk monitor graph is shown by default")
         expect(registeredDefaults[DefaultsKey.monitorDiskUsage] as? Bool == true,
@@ -302,6 +309,30 @@ struct MetricsTests {
                "menu bar label style defaults to compact")
         expect(registeredDefaults[DefaultsKey.menuBarMemoryStyle] as? String == "percent",
                "memory menu bar style defaults to percent")
+        expect(registeredDefaults[DefaultsKey.windowLayoutShortcutsEnabled] as? Bool == false,
+               "window layout shortcuts stay off until enabled")
+        let layoutShortcutKeys = [
+            DefaultsKey.windowLayoutShortcutLeft,
+            DefaultsKey.windowLayoutShortcutRight,
+            DefaultsKey.windowLayoutShortcutTop,
+            DefaultsKey.windowLayoutShortcutBottom,
+            DefaultsKey.windowLayoutShortcutTopLeft,
+            DefaultsKey.windowLayoutShortcutTopRight,
+            DefaultsKey.windowLayoutShortcutBottomLeft,
+            DefaultsKey.windowLayoutShortcutBottomRight,
+            DefaultsKey.windowLayoutShortcutMaximize,
+            DefaultsKey.windowLayoutShortcutCenter,
+            DefaultsKey.windowLayoutShortcutRestore,
+        ]
+        let layoutShortcutValues = layoutShortcutKeys.compactMap { registeredDefaults[$0] as? String }
+        expect(layoutShortcutValues.count == layoutShortcutKeys.count,
+               "every window layout action has a registered shortcut")
+        expect(Set(layoutShortcutValues).count == layoutShortcutValues.count,
+               "window layout shortcuts do not conflict with each other by default")
+        let globalShortcutValues = GlobalShortcutRole.allCases
+            .compactMap { registeredDefaults[$0.storageKey] as? String }
+        expect(Set(layoutShortcutValues).intersection(globalShortcutValues).isEmpty,
+               "window layout shortcuts do not conflict with other global shortcuts by default")
         expect(registeredDefaults[DefaultsKey.mediaLastTool] as? String == MediaTool.videoCompressor.rawValue,
                "Media defaults to video compressor")
         expect(registeredDefaults[DefaultsKey.mediaVideoCodec] as? String == MediaVideoCodec.h264.rawValue,
@@ -342,6 +373,153 @@ struct MetricsTests {
                                                 defaultOrder: ["homebrew", "media", "uninstaller", "cleanURL", "cleaning"])
                == ["uninstaller", "homebrew", "media", "cleanURL", "cleaning"],
                "panel item order keeps saved valid items first and appends defaults")
+
+        // MARK: Window layout geometry
+
+        let visibleFrame = CGRect(x: 0, y: 40, width: 1440, height: 860)
+        let currentWindow = CGRect(x: 200, y: 200, width: 800, height: 500)
+        expect(WindowLayoutGeometry.rect(for: .leftHalf, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 0, y: 40, width: 720, height: 860),
+               "window layout left half targets the full left side")
+        expect(WindowLayoutGeometry.rect(for: .rightHalf, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 720, y: 40, width: 720, height: 860),
+               "window layout right half targets the full right side")
+        expect(WindowLayoutGeometry.rect(for: .topHalf, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 0, y: 470, width: 1440, height: 430),
+               "window layout top half targets the upper visible frame")
+        expect(WindowLayoutGeometry.rect(for: .bottomHalf, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 0, y: 40, width: 1440, height: 430),
+               "window layout bottom half targets the lower visible frame")
+        expect(WindowLayoutGeometry.rect(for: .topLeft, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 0, y: 470, width: 720, height: 430),
+               "window layout top left targets the upper-left quadrant")
+        expect(WindowLayoutGeometry.rect(for: .topRight, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 720, y: 470, width: 720, height: 430),
+               "window layout top right targets the upper-right quadrant")
+        expect(WindowLayoutGeometry.rect(for: .bottomLeft, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 0, y: 40, width: 720, height: 430),
+               "window layout bottom left targets the lower-left quadrant")
+        expect(WindowLayoutGeometry.rect(for: .bottomRight, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 720, y: 40, width: 720, height: 430),
+               "window layout bottom right targets the lower-right quadrant")
+        expect(WindowLayoutGeometry.rect(for: .maximize, current: currentWindow, visibleFrame: visibleFrame)
+               == visibleFrame,
+               "window layout maximize uses the full visible frame")
+        expect(WindowLayoutGeometry.rect(for: .center, current: currentWindow, visibleFrame: visibleFrame)
+               == CGRect(x: 320, y: 220, width: 800, height: 500),
+               "window layout center preserves current size and centers inside the visible frame")
+        expect(WindowLayoutGeometry.rect(for: .restore, current: currentWindow, visibleFrame: visibleFrame)
+               == currentWindow,
+               "window layout restore keeps the saved frame")
+        let topWindow = CGRect(x: 0, y: 470, width: 1440, height: 430)
+        let bottomWindow = CGRect(x: 0, y: 40, width: 1440, height: 430)
+        let leftWindow = CGRect(x: 0, y: 40, width: 720, height: 860)
+        let topLeftWindow = CGRect(x: 0, y: 470, width: 720, height: 430)
+        expect(WindowLayoutGeometry.effectiveAction(for: .topHalf,
+                                                    current: topWindow,
+                                                    visibleFrame: visibleFrame) == .topHalf,
+               "window layout top half stays direct when the previous layout action was not top")
+        expect(WindowLayoutGeometry.effectiveAction(for: .topHalf,
+                                                    current: topWindow,
+                                                    visibleFrame: visibleFrame,
+                                                    previousAction: .topHalf) == .maximize,
+               "window layout top half promotes only when top is used twice in a row")
+        expect(WindowLayoutGeometry.effectiveAction(for: .topHalf,
+                                                    current: currentWindow,
+                                                    visibleFrame: visibleFrame) == .topHalf,
+               "window layout top half stays top when the window is elsewhere")
+        expect(WindowLayoutGeometry.effectiveAction(for: .bottomHalf,
+                                                    current: topWindow,
+                                                    visibleFrame: visibleFrame) == .bottomHalf,
+               "window layout bottom does not promote while at the top")
+        expect(WindowLayoutGeometry.effectiveAction(for: .leftHalf,
+                                                    current: topWindow,
+                                                    visibleFrame: visibleFrame) == .leftHalf,
+               "window layout left stays direct when the window is already at the top")
+        expect(WindowLayoutGeometry.effectiveAction(for: .leftHalf,
+                                                    current: topWindow,
+                                                    visibleFrame: visibleFrame,
+                                                    previousAction: .topHalf) == .leftHalf,
+               "window layout left does not become a corner after top")
+        expect(WindowLayoutGeometry.effectiveAction(for: .rightHalf,
+                                                    current: topWindow,
+                                                    visibleFrame: visibleFrame) == .rightHalf,
+               "window layout right stays direct when the window is already at the top")
+        expect(WindowLayoutGeometry.effectiveAction(for: .leftHalf,
+                                                    current: bottomWindow,
+                                                    visibleFrame: visibleFrame) == .leftHalf,
+               "window layout left stays direct when the window is already at the bottom")
+        expect(WindowLayoutGeometry.effectiveAction(for: .rightHalf,
+                                                    current: bottomWindow,
+                                                    visibleFrame: visibleFrame) == .rightHalf,
+               "window layout right stays direct when the window is already at the bottom")
+        expect(WindowLayoutGeometry.effectiveAction(for: .leftHalf,
+                                                    current: topLeftWindow,
+                                                    visibleFrame: visibleFrame) == .leftHalf,
+               "window layout left stays direct from the upper-left corner")
+        expect(WindowLayoutGeometry.effectiveAction(for: .topHalf,
+                                                    current: topLeftWindow,
+                                                    visibleFrame: visibleFrame) == .topHalf,
+               "window layout top stays direct from the upper-left corner")
+        expect(WindowLayoutGeometry.effectiveAction(for: .topHalf,
+                                                    current: leftWindow,
+                                                    visibleFrame: visibleFrame) == .topHalf,
+               "window layout top stays direct when the window is already on the left")
+        expect(WindowLayoutGeometry.effectiveAction(for: .bottomHalf,
+                                                    current: leftWindow,
+                                                    visibleFrame: visibleFrame) == .bottomHalf,
+               "window layout bottom stays direct when the window is already on the left")
+        expect(WindowLayoutGeometry.effectiveAction(for: .rightHalf,
+                                                    current: bottomWindow,
+                                                    visibleFrame: visibleFrame,
+                                                    previousAction: .bottomHalf) == .rightHalf,
+               "window layout right does not become a corner after bottom")
+        let leftTarget = WindowLayoutGeometry.rect(for: .leftHalf,
+                                                   current: currentWindow,
+                                                   visibleFrame: visibleFrame)
+        let rightTarget = WindowLayoutGeometry.rect(for: .rightHalf,
+                                                    current: currentWindow,
+                                                    visibleFrame: visibleFrame)
+        expect(WindowLayoutGeometry.accepts(actualRect: CGRect(x: 0, y: 40, width: 720, height: 430),
+                                            targetRect: leftTarget,
+                                            action: .leftHalf,
+                                            anchorTolerance: 36) == false,
+               "window layout left half does not accept a lower-left corner as the full side")
+        expect(WindowLayoutGeometry.accepts(actualRect: CGRect(x: 720, y: 40, width: 720, height: 430),
+                                            targetRect: rightTarget,
+                                            action: .rightHalf,
+                                            anchorTolerance: 36) == false,
+               "window layout right half does not accept a lower-right corner as the full side")
+        expect(WindowLayoutGeometry.accepts(actualRect: CGRect(x: 540, y: 40, width: 900, height: 860),
+                                            targetRect: rightTarget,
+                                            action: .rightHalf,
+                                            anchorTolerance: 36),
+               "window layout right half accepts a larger app minimum size when it spans the full height")
+        expect(WindowLayoutGeometry.anchoredRect(for: .rightHalf,
+                                                 targetRect: rightTarget,
+                                                 actualSize: CGSize(width: 900, height: 700),
+                                                 visibleFrame: visibleFrame)
+               == CGRect(x: 540, y: 40, width: 900, height: 700),
+               "window layout right anchors the accepted app size to the right edge")
+        let bottomTarget = WindowLayoutGeometry.rect(for: .bottomHalf,
+                                                     current: currentWindow,
+                                                     visibleFrame: visibleFrame)
+        expect(WindowLayoutGeometry.anchoredRect(for: .bottomHalf,
+                                                 targetRect: bottomTarget,
+                                                 actualSize: CGSize(width: 1000, height: 620),
+                                                 visibleFrame: visibleFrame)
+               == CGRect(x: 0, y: 40, width: 1000, height: 620),
+               "window layout bottom anchors the accepted app size to the bottom edge")
+        let bottomRightTarget = WindowLayoutGeometry.rect(for: .bottomRight,
+                                                          current: currentWindow,
+                                                          visibleFrame: visibleFrame)
+        expect(WindowLayoutGeometry.anchoredRect(for: .bottomRight,
+                                                 targetRect: bottomRightTarget,
+                                                 actualSize: CGSize(width: 900, height: 620),
+                                                 visibleFrame: visibleFrame)
+               == CGRect(x: 540, y: 40, width: 900, height: 620),
+               "window layout bottom right anchors the accepted app size to both requested edges")
+
         let trim = MediaSupport.sanitizedTrim(start: -5, end: 3, assetDuration: 10)
         expect(trim == MediaTrimRange(start: 0, end: 3),
                "Media trim clamps negative start")
@@ -589,6 +767,33 @@ struct MetricsTests {
                                                       desiredWindowID: nil)
         expect(closeLast.shouldEndSession && closeLast.remainingWindowIDs.isEmpty,
                "Dock Preview close ends the panel when the last window is removed")
+        let switcherCloseSelected = SwitcherSupport.closeState(afterRemoving: "b",
+                                                               itemIDs: ["a", "b", "c"],
+                                                               selectedIndex: 1)
+        expect(switcherCloseSelected.remainingItemIDs == ["a", "c"]
+               && switcherCloseSelected.selectedIndex == 1
+               && !switcherCloseSelected.shouldEndSession,
+               "App Switcher close selects the next window after closing the selected one")
+        let switcherCloseBeforeSelection = SwitcherSupport.closeState(afterRemoving: "a",
+                                                                      itemIDs: ["a", "b", "c"],
+                                                                      selectedIndex: 2)
+        expect(switcherCloseBeforeSelection.remainingItemIDs == ["b", "c"]
+               && switcherCloseBeforeSelection.selectedIndex == 1,
+               "App Switcher close preserves the same logical selection after removing an earlier window")
+        let switcherCloseLast = SwitcherSupport.closeState(afterRemoving: "only",
+                                                           itemIDs: ["only"],
+                                                           selectedIndex: 0)
+        expect(switcherCloseLast.didRemove
+               && switcherCloseLast.shouldEndSession
+               && switcherCloseLast.remainingItemIDs.isEmpty,
+               "App Switcher close ends the session after the last item is removed")
+        let switcherCloseMissing = SwitcherSupport.closeState(afterRemoving: "missing",
+                                                              itemIDs: ["a", "b"],
+                                                              selectedIndex: 1)
+        expect(!switcherCloseMissing.didRemove
+               && switcherCloseMissing.remainingItemIDs == ["a", "b"]
+               && switcherCloseMissing.selectedIndex == 1,
+               "App Switcher close leaves selection intact when the item is not present")
         // MARK: Release notes parsing
 
         let changelog = """
@@ -750,6 +955,22 @@ struct MetricsTests {
                "Homebrew parser reads installed formula version")
         expect(homebrewPackages.first(where: { $0.name == "visual-studio-code" })?.displayName == "Visual Studio Code",
                "Homebrew parser reads cask display name")
+        let cleanCommandPackages = (try? HomebrewParser.parseInfoCommandOutput(homebrewJSON)) ?? []
+        expect(cleanCommandPackages.count == 2,
+               "Homebrew command output parser keeps clean JSON")
+        let noisyHomebrewOutput = """
+        Warning: Skipping some beta metadata
+        {"notice": "not package data"}
+        \(homebrewJSON)
+        Warning: A newer Homebrew beta changed an optional field
+        """
+        let noisyCommandPackages = (try? HomebrewParser.parseInfoCommandOutput(noisyHomebrewOutput)) ?? []
+        expect(noisyCommandPackages.count == 2,
+               "Homebrew command output parser accepts warnings around JSON")
+        expect(noisyCommandPackages.first(where: { $0.name == "visual-studio-code" })?.installedVersion == "1.107.0",
+               "Homebrew command output parser keeps package data from noisy output")
+        expect((try? HomebrewParser.parseInfoCommandOutput("Warning: no JSON here")) == nil,
+               "Homebrew command output parser rejects output without valid JSON")
         let searchPackages = HomebrewParser.parseSearchOutput("jq\nbad token\nwget\nvisual-studio-code\n",
                                                               kind: .formula,
                                                               installed: homebrewPackages)
