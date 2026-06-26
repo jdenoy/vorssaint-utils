@@ -46,6 +46,9 @@ final class KeepAwakeManager: ObservableObject {
     private var hasDisplayAssertion = false
     private var endTimer: Timer?
     private var batteryTimer: Timer?
+    private var mouseJiggleTimer: Timer?
+    private var pendingMouseReturn: DispatchWorkItem?
+    private var defaultsObserver: AnyCancellable?
     /// Guards the closed-lid setup against an infinite retry loop: if `pmset
     /// disablesleep` keeps failing while the sudoers rule still checks out as
     /// installed, re-preparing would bounce here forever (and flicker the
@@ -55,6 +58,13 @@ final class KeepAwakeManager: ObservableObject {
     private init() {
         clamshellPreferred = UserDefaults.standard.bool(forKey: DefaultsKey.clamshellPreferred)
         refreshPasswordlessStatus()
+        defaultsObserver = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.syncMouseJiggleTimer()
+                }
+            }
     }
 
     /// Refreshes (in the background) whether the closed-lid sudoers rule is installed.
@@ -92,9 +102,17 @@ final class KeepAwakeManager: ObservableObject {
             endDate = nil
         }
         startBatteryWatch()
+        syncMouseJiggleTimer()
         if clamshellPreferred {
             applyClamshellPreference()
         }
+    }
+
+    func activateOnLaunchIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: DefaultsKey.keepAwakeAutoStart),
+              !isActive else { return }
+        activate(minutes: Defaults.sanitizedDefaultDuration(
+            UserDefaults.standard.integer(forKey: DefaultsKey.defaultDuration)))
     }
 
     func extend(minutes: Int) {
@@ -115,6 +133,7 @@ final class KeepAwakeManager: ObservableObject {
         }
         isActive = false
         stopBatteryWatch()
+        stopMouseJiggleTimer()
         if hadSession, reason != .quit, reason != .manual {
             onSessionEnded?(reason)
         }
@@ -232,10 +251,14 @@ final class KeepAwakeManager: ObservableObject {
     private func enableClamshell() {
         guard !clamshellActive else { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = Sudoers.pmsetDisableSleep(true)
+            let usedPasswordless = Sudoers.pmsetDisableSleep(true)
+            let ok = usedPasswordless
+                || AdminShell.runSync("pmset disablesleep 1", prompt: L10n.shared.s.adminPromptClamshellOn)
             DispatchQueue.main.async {
-                guard ok else {
+                if !usedPasswordless {
                     self.passwordlessClamshell = false
+                }
+                guard ok else {
                     guard self.clamshellPreferred else { return }
                     if self.clamshellSetupRetried {
                         // Already re-acquired the rule once and pmset still won't
@@ -264,10 +287,14 @@ final class KeepAwakeManager: ObservableObject {
     private func disableClamshell(synchronous: Bool) {
         clamshellActive = false
         let revert = {
-            let ok = Sudoers.pmsetDisableSleep(false)
+            let usedPasswordless = Sudoers.pmsetDisableSleep(false)
+            let ok = usedPasswordless
                 || AdminShell.runSync("pmset disablesleep 0", prompt: L10n.shared.s.adminPromptClamshellOff)
             if ok {
                 DispatchQueue.main.async {
+                    if !usedPasswordless {
+                        self.passwordlessClamshell = false
+                    }
                     UserDefaults.standard.set(false, forKey: DefaultsKey.sleepDisabledFlag)
                 }
             }
@@ -281,8 +308,11 @@ final class KeepAwakeManager: ObservableObject {
 
     /// If the app died unexpectedly while sleep was disabled, restores normal
     /// behavior on the next launch.
-    func recoverIfNeeded() {
-        guard UserDefaults.standard.bool(forKey: DefaultsKey.sleepDisabledFlag) else { return }
+    func recoverIfNeeded(completion: (() -> Void)? = nil) {
+        guard UserDefaults.standard.bool(forKey: DefaultsKey.sleepDisabledFlag) else {
+            completion?()
+            return
+        }
         DispatchQueue.global(qos: .utility).async {
             let out = Shell.run("/usr/bin/pmset", ["-g"]).output
             let stillDisabled = out.range(of: #"SleepDisabled\s+1"#, options: .regularExpression) != nil
@@ -290,20 +320,23 @@ final class KeepAwakeManager: ObservableObject {
                 // Silent recovery through the password-free path.
                 DispatchQueue.main.async {
                     UserDefaults.standard.set(false, forKey: DefaultsKey.sleepDisabledFlag)
+                    completion?()
                 }
                 return
             }
             DispatchQueue.main.async {
                 if stillDisabled {
                     AdminShell.run("pmset disablesleep 0", prompt: L10n.shared.s.adminPromptRecover) { ok in
-                        if ok {
-                            DispatchQueue.main.async {
+                        DispatchQueue.main.async {
+                            if ok {
                                 UserDefaults.standard.set(false, forKey: DefaultsKey.sleepDisabledFlag)
                             }
+                            completion?()
                         }
                     }
                 } else {
                     UserDefaults.standard.set(false, forKey: DefaultsKey.sleepDisabledFlag)
+                    completion?()
                 }
             }
         }
@@ -334,5 +367,117 @@ final class KeepAwakeManager: ObservableObject {
               battery.isOnBattery,
               battery.percent <= limit else { return }
         deactivate(reason: .battery)
+    }
+
+    // MARK: - Optional pointer activity
+
+    private func syncMouseJiggleTimer() {
+        guard isActive,
+              UserDefaults.standard.bool(forKey: DefaultsKey.keepAwakeMouseJiggleEnabled)
+        else {
+            stopMouseJiggleTimer()
+            return
+        }
+
+        let minutes = Defaults.sanitizedKeepAwakeMouseJiggleInterval(
+            UserDefaults.standard.integer(forKey: DefaultsKey.keepAwakeMouseJiggleInterval)
+        )
+        let interval = TimeInterval(minutes * 60)
+        if mouseJiggleTimer?.timeInterval == interval { return }
+
+        stopMouseJiggleTimer()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.jiggleMousePointer()
+        }
+        timer.tolerance = min(10, interval * 0.1)
+        RunLoop.main.add(timer, forMode: .common)
+        mouseJiggleTimer = timer
+    }
+
+    private func stopMouseJiggleTimer() {
+        mouseJiggleTimer?.invalidate()
+        mouseJiggleTimer = nil
+        pendingMouseReturn?.cancel()
+        pendingMouseReturn = nil
+    }
+
+    private func jiggleMousePointer() {
+        guard isActive,
+              UserDefaults.standard.bool(forKey: DefaultsKey.keepAwakeMouseJiggleEnabled),
+              let original = Self.currentMouseLocation(),
+              let target = Self.mouseJiggleTarget(from: original)
+        else {
+            syncMouseJiggleTimer()
+            return
+        }
+
+        guard Self.postMouseMove(to: target) else { return }
+
+        pendingMouseReturn?.cancel()
+        let returnMove = DispatchWorkItem { [weak self] in
+            self?.pendingMouseReturn = nil
+            guard let current = Self.currentMouseLocation() else { return }
+            guard abs(current.x - target.x) <= 2,
+                  abs(current.y - target.y) <= 2 else { return }
+            _ = Self.postMouseMove(to: original)
+        }
+        pendingMouseReturn = returnMove
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: returnMove)
+    }
+
+    private static func currentMouseLocation() -> CGPoint? {
+        CGEvent(source: nil)?.location
+    }
+
+    private static func mouseJiggleTarget(from original: CGPoint) -> CGPoint? {
+        guard let bounds = displayBounds(containing: original) else { return nil }
+        let safeFrame = bounds.insetBy(dx: 2, dy: 2)
+        let x = min(max(original.x, safeFrame.minX), safeFrame.maxX)
+        let y = min(max(original.y, safeFrame.minY), safeFrame.maxY)
+
+        if x + 1 <= safeFrame.maxX {
+            return CGPoint(x: x + 1, y: y)
+        }
+        if x - 1 >= safeFrame.minX {
+            return CGPoint(x: x - 1, y: y)
+        }
+        if y + 1 <= safeFrame.maxY {
+            return CGPoint(x: x, y: y + 1)
+        }
+        if y - 1 >= safeFrame.minY {
+            return CGPoint(x: x, y: y - 1)
+        }
+        return nil
+    }
+
+    private static func displayBounds(containing point: CGPoint) -> CGRect? {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+            return nil
+        }
+
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else {
+            return nil
+        }
+
+        for display in displays.prefix(Int(count)) {
+            let bounds = CGDisplayBounds(display)
+            if point.x >= bounds.minX, point.x <= bounds.maxX,
+               point.y >= bounds.minY, point.y <= bounds.maxY {
+                return bounds
+            }
+        }
+        return nil
+    }
+
+    private static func postMouseMove(to point: CGPoint) -> Bool {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let event = CGEvent(mouseEventSource: source,
+                                  mouseType: .mouseMoved,
+                                  mouseCursorPosition: point,
+                                  mouseButton: .left) else { return false }
+        event.post(tap: .cghidEventTap)
+        return true
     }
 }
